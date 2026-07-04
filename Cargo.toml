@@ -1,0 +1,25 @@
+[package]
+name = "bip110pack"
+version = "0.1.0"
+edition = "2021"
+description = "Maximally pack a Bitcoin block with BIP-110-compliant arbitrary data via Taproot push/OP_2DROP tapscripts"
+license = "MIT"
+
+[dependencies]
+# secp256k1 is re-exported as bitcoin::secp256k1 (v0.29.x) — do NOT depend on it separately.
+# No RNG needed: the internal key is derived from fixed bytes, so default features suffice.
+bitcoin = { version = "0.32", features = ["std"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+hex = "0.4"
+
+[lib]
+name = "bip110pack"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bip110pack"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2
