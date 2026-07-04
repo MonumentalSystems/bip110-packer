@@ -48,8 +48,13 @@
 //!   (fixed-bytes, no-RNG) internal key.
 //! * [`packer`] — fill a block up to ~4,000,000 WU, tracking cumulative weight.
 //! * [`bip110`] — an *independent* BIP-110 compliance re-checker.
+//! * [`framing`] — 1-byte header + optional DEFLATE compression pre-pass.
+//! * [`channels`] — pluggable data-encoding channels (tapleaf, control-block,
+//!   witness-args, p2wsh-envelope, op-return, fake-key, stego).
 
 pub mod bip110;
+pub mod channels;
+pub mod framing;
 pub mod packer;
 pub mod taproot_spend;
 pub mod tapscript;

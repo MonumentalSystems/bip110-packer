@@ -12,6 +12,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::str::FromStr;
 
 use bip110_packer::bip110;
+use bip110_packer::channels::{self, Channel};
+use bip110_packer::framing;
 use bip110_packer::packer;
 use bip110_packer::taproot_spend;
 use bip110_packer::tapscript::{Auth, Violate};
@@ -127,6 +129,13 @@ enum Command {
         /// Optional output file for the raw recovered bytes (else hex to stdout).
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Data-encoding channel the tx was built with.
+        #[arg(long, value_enum, default_value_t = Channel::Tapleaf)]
+        channel: Channel,
+        /// (Informational) the payload was compressed. Ignored: the framing
+        /// header is self-describing, so `unframe` auto-detects compression.
+        #[arg(long)]
+        compress: bool,
     },
     /// Print the P2TR commit address (and scriptPubKey) to fund for a later
     /// data-carrying reveal spend.
@@ -143,6 +152,12 @@ enum Command {
         /// Target network.
         #[arg(long, value_enum, default_value_t = NetworkArg::Regtest)]
         network: NetworkArg,
+        /// Data-encoding channel.
+        #[arg(long, value_enum, default_value_t = Channel::Tapleaf)]
+        channel: Channel,
+        /// Compress the payload with DEFLATE before encoding.
+        #[arg(long)]
+        compress: bool,
         /// Deliberately inject a BIP-110 violation (enforcement/gap testing).
         #[arg(long, value_enum, default_value_t = ViolateArg::None)]
         violate: ViolateArg,
@@ -174,6 +189,12 @@ enum Command {
         /// Destination address for the single output.
         #[arg(long)]
         to: String,
+        /// Data-encoding channel.
+        #[arg(long, value_enum, default_value_t = Channel::Tapleaf)]
+        channel: Channel,
+        /// Compress the payload with DEFLATE before encoding.
+        #[arg(long)]
+        compress: bool,
         /// Deliberately inject a BIP-110 violation (enforcement/gap testing).
         #[arg(long, value_enum, default_value_t = ViolateArg::None)]
         violate: ViolateArg,
@@ -273,41 +294,20 @@ fn cmd_verify(txhex: &str) -> Result<()> {
     }
 }
 
-fn cmd_extract(txhex: &str, out: &Option<PathBuf>) -> Result<()> {
-    use bip110_packer::tapscript::{extract_data, extract_ord_payload};
-    use bitcoin::script::ScriptBuf;
-
+fn cmd_extract(txhex: &str, out: &Option<PathBuf>, channel: Channel, compress: bool) -> Result<()> {
     let raw = hex::decode(txhex.trim()).context("decoding tx hex")?;
     let tx: Transaction = encode::deserialize(&raw).context("deserializing transaction")?;
 
-    let witness = &tx
-        .input
-        .first()
-        .ok_or_else(|| anyhow!("tx has no inputs"))?
-        .witness;
-    let n = witness.len();
-    if n < 2 {
-        return Err(anyhow!(
-            "input witness has {n} item(s); expected a taproot script-path spend (>=2)"
-        ));
-    }
-    // Taproot script-path witness: [..args, tapleaf_script, control_block].
-    // The tapleaf script is the second-to-last item.
-    let script_bytes = witness
-        .nth(n - 2)
-        .ok_or_else(|| anyhow!("missing tapleaf script witness item"))?;
-    let script = ScriptBuf::from(script_bytes.to_vec());
-
-    // Prefer the ord-envelope payload (has a PROTOCOL_ID); fall back to the raw
-    // push-concatenation used by the `pack` path.
-    let mut data = extract_ord_payload(&script);
-    if data.is_empty() {
-        data = extract_data(&script).map_err(|e| anyhow!(e))?;
-    }
+    // Recover the FRAMED bytes from the channel, then unframe. The framing header
+    // is self-describing, so `--compress` is informational only.
+    let _ = compress;
+    let framed = channels::decode(channel, &tx).context("decoding channel payload")?;
+    let data = framing::unframe(&framed).context("unframing recovered payload")?;
 
     eprintln!(
-        "bip110-packer: recovered {} data byte(s) from witness",
-        data.len()
+        "bip110-packer: recovered {} data byte(s) ({} framed) via {channel:?}",
+        data.len(),
+        framed.len()
     );
     match out {
         Some(path) => {
@@ -329,35 +329,74 @@ fn resolve_data(input: &Option<String>, data_hex: &Option<String>) -> Result<Vec
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_commit(
     input: &Option<String>,
     data_hex: &Option<String>,
     auth: AuthArg,
     network: NetworkArg,
+    channel: Channel,
+    compress: bool,
     violate: ViolateArg,
 ) -> Result<()> {
     let data = resolve_data(input, data_hex)?;
     let net: Network = network.into();
-    let addr = if violate.is_none() {
-        taproot_spend::commit_address(&data, auth.into(), net)?
-    } else {
-        // Violating commits are anyone-can-spend (leaf carries the violation);
-        // --auth is ignored. `output` uses a compliant leaf (Violate::None) with
-        // the oversize output added only at spend time.
-        taproot_spend::commit_address_violation(&data, violate.to_leaf(), net)?
-    };
-    let spk = addr.script_pubkey();
-    println!("{addr}");
-    println!("{}", hex::encode(spk.as_bytes()));
-    eprintln!(
-        "bip110-packer: commit address for {} data byte(s)",
-        data.len()
-    );
-    eprintln!("  auth:            {auth:?}");
-    eprintln!("  network:         {net}");
-    eprintln!("  scriptPubKey:    {} bytes", spk.len());
+
+    // Deliberate BIP-110 violations are a tapleaf-only enforcement demo and use
+    // the RAW (unframed) data so `commit` and `build-spend` stay consistent.
     if !violate.is_none() {
+        if channel != Channel::Tapleaf {
+            return Err(anyhow!(
+                "--violate is only supported on the `tapleaf` channel"
+            ));
+        }
+        let addr = taproot_spend::commit_address_violation(&data, violate.to_leaf(), net)?;
+        let spk = addr.script_pubkey();
+        println!("{addr}");
+        println!("{}", hex::encode(spk.as_bytes()));
+        eprintln!(
+            "bip110-packer: commit address for {} data byte(s)",
+            data.len()
+        );
+        eprintln!("  channel:         {channel:?}");
+        eprintln!("  network:         {net}");
+        eprintln!("  scriptPubKey:    {} bytes", spk.len());
         eprintln!("  NOTE: deliberately BIP-110-NON-COMPLIANT commit (--violate {violate:?})");
+        return Ok(());
+    }
+
+    let framed = framing::frame(&data, compress);
+
+    // Tapleaf keeps its `--auth` support by calling the taproot path directly;
+    // all other commit/reveal channels dispatch through `channels`.
+    let addr_opt = if channel == Channel::Tapleaf {
+        Some(taproot_spend::commit_address(&framed, auth.into(), net)?)
+    } else {
+        channels::commit_address(channel, &framed, net)?
+    };
+
+    match addr_opt {
+        Some(addr) => {
+            let spk = addr.script_pubkey();
+            println!("{addr}");
+            println!("{}", hex::encode(spk.as_bytes()));
+            eprintln!(
+                "bip110-packer: commit address for {} data byte(s) ({} framed)",
+                data.len(),
+                framed.len()
+            );
+            eprintln!("  channel:         {channel:?}");
+            eprintln!("  auth:            {auth:?}");
+            eprintln!("  compress:        {compress}");
+            eprintln!("  network:         {net}");
+            eprintln!("  scriptPubKey:    {} bytes", spk.len());
+        }
+        None => {
+            eprintln!(
+                "channel {channel:?} is output-only; it has no commit address. \
+                 Use `build-spend --channel …` to emit the data tx directly."
+            );
+        }
     }
     Ok(())
 }
@@ -368,6 +407,8 @@ fn cmd_build_spend(
     data_hex: &Option<String>,
     auth: AuthArg,
     network: NetworkArg,
+    channel: Channel,
+    compress: bool,
     prevout: &str,
     prevout_value: u64,
     fee: u64,
@@ -392,19 +433,16 @@ fn cmd_build_spend(
         .context("--to address does not match --network")?;
     let to_spk = to_addr.script_pubkey();
 
-    let tx = if violate.is_none() {
-        taproot_spend::build_signed_spend(
-            &data,
-            auth.into(),
-            outpoint,
-            Amount::from_sat(prevout_value),
-            &to_spk,
-            Amount::from_sat(fee),
-            net,
-        )?
-    } else {
+    // Deliberate BIP-110 violations are a tapleaf-only enforcement demo and use
+    // the RAW (unframed) data so `commit` and `build-spend` stay consistent.
+    if !violate.is_none() {
+        if channel != Channel::Tapleaf {
+            return Err(anyhow!(
+                "--violate is only supported on the `tapleaf` channel"
+            ));
+        }
         // Violating reveals are anyone-can-spend; --auth is ignored.
-        taproot_spend::build_spend_violation(
+        let tx = taproot_spend::build_spend_violation(
             &data,
             violate.to_leaf(),
             outpoint,
@@ -413,22 +451,78 @@ fn cmd_build_spend(
             Amount::from_sat(fee),
             net,
             violate.oversize_output(),
+        )?;
+        println!("{}", hex::encode(encode::serialize(&tx)));
+        eprintln!("bip110-packer: built reveal tx (deliberate violation)");
+        eprintln!("  channel:         {channel:?}");
+        eprintln!("  network:         {net}");
+        eprintln!("  txid:            {}", tx.compute_txid());
+        eprintln!("  data bytes:      {}", data.len());
+        eprintln!("  weight:          {} WU", tx.weight().to_wu());
+        match bip110::validate(&tx) {
+            Ok(()) => eprintln!("  BIP-110 check:   PASS"),
+            Err(vs) => {
+                for v in &vs {
+                    eprintln!("  VIOLATION {v}");
+                }
+                // Deliberate violation: still emit the hex and exit 0 so a node
+                // can be fed the tx for the gap demo.
+                eprintln!(
+                    "  NOTE: this tx is deliberately BIP-110-NON-COMPLIANT (--violate {violate:?})"
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let framed = framing::frame(&data, compress);
+
+    // Tapleaf keeps its `--auth` support by calling the taproot path directly;
+    // every other channel dispatches through `channels::build`.
+    let tx = if channel == Channel::Tapleaf {
+        taproot_spend::build_signed_spend(
+            &framed,
+            auth.into(),
+            outpoint,
+            Amount::from_sat(prevout_value),
+            &to_spk,
+            Amount::from_sat(fee),
+            net,
+        )?
+    } else {
+        channels::build(
+            channel,
+            &framed,
+            outpoint,
+            Amount::from_sat(prevout_value),
+            &to_spk,
+            Amount::from_sat(fee),
+            net,
         )?
     };
 
     // Only the raw tx hex goes to stdout.
     println!("{}", hex::encode(encode::serialize(&tx)));
 
-    let witness_items = tx.input[0].witness.len();
-    eprintln!("bip110-packer: built reveal tx");
+    let witness_items = tx.input.first().map(|i| i.witness.len()).unwrap_or(0);
+    eprintln!("bip110-packer: built data tx");
+    eprintln!("  channel:         {channel:?}");
     eprintln!("  auth:            {auth:?}");
+    eprintln!("  compress:        {compress}");
     eprintln!("  network:         {net}");
     eprintln!("  txid:            {}", tx.compute_txid());
-    eprintln!("  data bytes:      {}", data.len());
+    eprintln!(
+        "  data bytes:      {} ({} framed)",
+        data.len(),
+        framed.len()
+    );
     eprintln!("  prevout:         {outpoint}");
     eprintln!("  prevout value:   {prevout_value} sat");
     eprintln!("  fee:             {fee} sat");
-    eprintln!("  output value:    {} sat", tx.output[0].value.to_sat());
+    if let Some(o) = tx.output.first() {
+        eprintln!("  output[0] value: {} sat", o.value.to_sat());
+    }
+    eprintln!("  outputs:         {}", tx.output.len());
     eprintln!("  witness items:   {witness_items}");
     eprintln!("  weight:          {} WU", tx.weight().to_wu());
     match bip110::validate(&tx) {
@@ -437,14 +531,7 @@ fn cmd_build_spend(
             for v in &vs {
                 eprintln!("  VIOLATION {v}");
             }
-            if violate.is_none() {
-                return Err(anyhow!("built tx failed BIP-110 validation"));
-            }
-            // Deliberate violation: still emit the hex and exit 0 so a node can
-            // be fed the tx for the gap demo.
-            eprintln!(
-                "  NOTE: this tx is deliberately BIP-110-NON-COMPLIANT (--violate {violate:?})"
-            );
+            return Err(anyhow!("built tx failed BIP-110 validation"));
         }
     }
     Ok(())
@@ -455,19 +542,30 @@ fn main() -> Result<()> {
     match &cli.command {
         Command::Pack { input, out } => cmd_pack(input, out),
         Command::Verify { txhex } => cmd_verify(txhex),
-        Command::Extract { txhex, out } => cmd_extract(txhex, out),
+        Command::Extract {
+            txhex,
+            out,
+            channel,
+            compress,
+        } => cmd_extract(txhex, out, *channel, *compress),
         Command::Commit {
             input,
             data_hex,
             auth,
             network,
+            channel,
+            compress,
             violate,
-        } => cmd_commit(input, data_hex, *auth, *network, *violate),
+        } => cmd_commit(
+            input, data_hex, *auth, *network, *channel, *compress, *violate,
+        ),
         Command::BuildSpend {
             input,
             data_hex,
             auth,
             network,
+            channel,
+            compress,
             prevout,
             prevout_value,
             fee,
@@ -478,6 +576,8 @@ fn main() -> Result<()> {
             data_hex,
             *auth,
             *network,
+            *channel,
+            *compress,
             prevout,
             *prevout_value,
             *fee,

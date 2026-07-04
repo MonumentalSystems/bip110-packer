@@ -1,6 +1,6 @@
 [package]
 name = "bip110-packer"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Maximally pack a Bitcoin block with BIP-110-compliant arbitrary data via Taproot push/OP_2DROP tapscripts"
 license = "MIT"
@@ -16,6 +16,8 @@ bitcoin = { version = "0.32", features = ["std"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 hex = "0.4"
+# Pure-Rust DEFLATE (no C toolchain) for the optional compression pre-pass.
+miniz_oxide = "0.8"
 
 [lib]
 name = "bip110_packer"

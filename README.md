@@ -64,11 +64,51 @@ non-anyone-can-spend output.
 
 ---
 
+## Encoding channels
+
+The tapleaf scheme above is the densest, but it's not the only BIP-110-compliant
+way to carry data. `--channel <name>` (on `commit` / `build-spend` / `extract`)
+selects among **seven** channels, each exploiting a different corner of the rules.
+Every one is proven end-to-end by `scripts/channels-demo.sh` (built → mined via
+`generateblock` → recovered from the mined tx). `--compress` adds a pure-Rust
+DEFLATE pre-pass that composes with all of them.
+
+| `--channel` | Where the data lives | Capacity | Cost | Notes |
+|---|---|---|---|---|
+| `tapleaf` *(default)* | tapleaf `push`/`OP_2DROP` pushes | unbounded | 1 WU/B | best bulk (~3.96 MB/block) |
+| `control-block` | internal key + Merkle sibling hashes | ~224 B/input | 1 WU/B | **novel**; looks like a normal deep-tree spend |
+| `witness-args` | witness stack items the script drops | ~255 KB/input | 1 WU/B | keeps the script tiny |
+| `p2wsh-envelope` | v0 P2WSH `OP_FALSE OP_IF … OP_ENDIF` | ~9.9 KB/input | 1 WU/B | the classic envelope — `OP_IF` is legal in v0 |
+| `op-return` | `OP_RETURN` outputs (≤80 B each) | 80 B/output | 4 WU/B | the "blessed" channel |
+| `fake-key` | 32-B P2TR programs (unspendable) | 32 B/output | 4 WU/B | UTXO-set bloat — worst case |
+| `stego` | `nSequence` + output-amount low bits | ~2 B/output | 4 WU/B | fields BIP-110 doesn't restrict |
+
+Commit/reveal channels (`tapleaf`, `control-block`, `witness-args`, `p2wsh-envelope`)
+fund a P2TR/P2WSH commit address then reveal; output-only channels (`op-return`,
+`fake-key`, `stego`) spend an existing UTXO and write the data into outputs.
+
+```bash
+# any channel, same commit → fund → reveal → extract flow:
+bip110-packer commit     --channel control-block --input data.bin --network regtest
+bip110-packer build-spend --channel control-block --compress --input data.bin \
+  --prevout <txid:vout> --prevout-value <sat> --fee <sat> --to <addr> --network regtest
+bip110-packer extract    --channel control-block <txhex>          # recovers the bytes
+```
+
+The **control-block** channel is the most novel: on a Taproot script-path spend you
+never sign with the internal key, and the Merkle sibling hashes in the control
+block are unconstrained — so the internal key (~31 B) and up to 7 siblings (32 B
+each) are pure data, computed into a valid taproot commitment. It's compliant
+(control block ≤ 257 B), recoverable, and indistinguishable from an ordinary deep
+script-tree spend.
+
+---
+
 ## Install / build
 
 ```bash
 cargo build --release            # binary: target/release/bip110-packer
-cargo test                       # 27 tests (21 unit + 6 enforcement)
+cargo test                       # 67 tests (61 unit + 6 enforcement)
 cargo install --path .           # install the `bip110-packer` CLI
 ```
 
@@ -251,9 +291,12 @@ src/tapscript.rs      envelope builder (ord-compatible) + Auth modes + extractor
 src/taproot_spend.rs  Taproot commit/reveal, deterministic keys, Schnorr signing
 src/packer.rs         fill a block to ~4 MWU, weight accounting
 src/bip110.rs         independent BIP-110 re-checker (C1–C10)
-src/main.rs           CLI: pack / commit / build-spend / verify / extract / --violate
+src/main.rs           CLI: pack / commit / build-spend / verify / extract (--channel / --compress / --violate)
+src/channels/         seven encoding channels (control-block, witness-args, p2wsh-envelope, op-return, fake-key, stego) + dispatch
+src/framing.rs        optional DEFLATE (--compress) pre-pass, composes with every channel
 tests/enforcement.rs  battery: validator rejects each rule (C1/C3/C6/C7/C8)
 scripts/regtest-demo.sh      live end-to-end proof against bitcoind/knots
+scripts/channels-demo.sh     mine + round-trip every encoding channel
 scripts/enforce-demo.sh      violation vs enforcement contrast (auto-detects the enforcing build)
 scripts/fetch-knots.sh       download official Knots binaries for this platform
 scripts/fetch-bip110-node.sh download the BIP-110 enforcing build (dathonohm/bitcoin)
