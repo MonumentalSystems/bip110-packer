@@ -94,7 +94,7 @@ impl From<NetworkArg> for Network {
 #[derive(Parser)]
 #[command(
     name = "bip110-packer",
-    about = "Maximally pack a Bitcoin block with BIP-110-compliant arbitrary data via Taproot push/OP_2DROP tapscripts",
+    about = "Pack a Bitcoin block with BIP-110-compliant arbitrary data via Taproot tapscripts and six other encoding channels",
     version
 )]
 struct Cli {

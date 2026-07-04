@@ -107,6 +107,8 @@ script-tree spend.
 ## Install / build
 
 ```bash
+cargo install bip110-packer      # from crates.io (latest 0.2.0)
+# — or from source —
 cargo build --release            # binary: target/release/bip110-packer
 cargo test                       # 67 tests (61 unit + 6 enforcement)
 cargo install --path .           # install the `bip110-packer` CLI
@@ -123,12 +125,12 @@ cargo install --path .           # install the `bip110-packer` CLI
   Requires a `CRATES_IO_TOKEN` repository secret. Release:
 
   ```bash
-  # bump `version` in Cargo.toml, commit, then:
-  git tag v0.1.0 && git push origin v0.1.0
+  # bump `version` in Cargo.toml (e.g. 0.2.0 -> 0.3.0), commit, then:
+  git tag v0.3.0 && git push origin v0.3.0
   ```
 
-  (The crate publishes as **`bip110-packer`** — matching the repo. Confirm the name
-  is free on crates.io before the first publish.)
+  The crate is published as [**`bip110-packer`**](https://crates.io/crates/bip110-packer)
+  (latest 0.2.0); each new tag whose version matches `Cargo.toml` publishes the next release.
 
 ## CLI
 
@@ -150,8 +152,11 @@ bip110-packer verify <txhex>
 bip110-packer extract <txhex> --out recovered.bin
 ```
 
-`bip110-packer verify` is an **independent** re-derivation of every BIP-110 rule
-(C1–C10) straight from the raw transaction — it does not trust the generator.
+`commit`, `build-spend`, and `extract` also take `--channel <name>` (see
+[Encoding channels](#encoding-channels), default `tapleaf`) and `--compress`
+(DEFLATE pre-pass). `bip110-packer verify` is an **independent** re-derivation of
+every BIP-110 rule (C1–C10) straight from the raw transaction — it does not trust
+the generator.
 
 ---
 
@@ -292,7 +297,7 @@ src/taproot_spend.rs  Taproot commit/reveal, deterministic keys, Schnorr signing
 src/packer.rs         fill a block to ~4 MWU, weight accounting
 src/bip110.rs         independent BIP-110 re-checker (C1–C10)
 src/main.rs           CLI: pack / commit / build-spend / verify / extract (--channel / --compress / --violate)
-src/channels/         seven encoding channels (control-block, witness-args, p2wsh-envelope, op-return, fake-key, stego) + dispatch
+src/channels/         six encoding channels (control-block, witness-args, p2wsh-envelope, op-return, fake-key, stego) + dispatch; tapleaf lives in tapscript.rs
 src/framing.rs        optional DEFLATE (--compress) pre-pass, composes with every channel
 tests/enforcement.rs  battery: validator rejects each rule (C1/C3/C6/C7/C8)
 scripts/regtest-demo.sh      live end-to-end proof against bitcoind/knots

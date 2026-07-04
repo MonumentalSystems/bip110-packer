@@ -2,7 +2,7 @@
 name = "bip110-packer"
 version = "0.2.0"
 edition = "2021"
-description = "Maximally pack a Bitcoin block with BIP-110-compliant arbitrary data via Taproot push/OP_2DROP tapscripts"
+description = "Pack a Bitcoin block with BIP-110-compliant arbitrary data — Taproot tapscript packing plus six other encoding channels and optional DEFLATE compression"
 license = "MIT"
 repository = "https://github.com/MonumentalSystems/bip110-packer"
 readme = "README.md"
