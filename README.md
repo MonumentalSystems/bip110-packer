@@ -133,22 +133,35 @@ funded: 5de5a548...5fa7f272:0  value=2000000 sat (confirmed)
 
 ### Proving it against Bitcoin Knots
 
-[Bitcoin Knots](https://bitcoinknots.org/) is the node shipping the stricter
-datacarrier / BIP-110-style enforcement, so getting these transactions accepted
-by a Knots regtest node is the strongest compliance proof. The harness is
-**node-agnostic** — point it at any `bitcoind`/`bitcoin-cli` pair:
+[Bitcoin Knots](https://bitcoinknots.org/) ships the stricter datacarrier /
+BIP-110-style relay policy, so it's the most interesting node to run against. The
+harness is **node-agnostic** — a helper downloads the official Knots binaries for
+your platform and prints the env vars to point the harness at them:
 
 ```bash
-BITCOIND=/path/to/knots/bin/bitcoind \
-BITCOIN_CLI=/path/to/knots/bin/bitcoin-cli \
-./scripts/regtest-demo.sh
+eval "$(./scripts/fetch-knots.sh)"   # downloads Knots, exports BITCOIND/BITCOIN_CLI
+./scripts/regtest-demo.sh            # same demo, now on Knots
 ```
 
-> **Policy vs consensus.** Large data transactions are non-standard to *relay*
-> (mempool policy), which is why we mine via `generateblock` — the exact path a
-> miner uses to include a transaction directly. The harness also prints
-> `testmempoolaccept` so you can see the relay verdict (which is where Knots'
-> stricter policy differs from Core).
+(or point `BITCOIND` / `BITCOIN_CLI` at any `bitcoind`/`bitcoin-cli` pair yourself.)
+
+**Observed result — the policy/consensus split is exactly what BIP-110 is about.**
+The same reveal transaction, run against both nodes:
+
+| | Bitcoin Core v30 | Bitcoin Knots v29.3 |
+|---|---|---|
+| `bip110pack verify` (our checker) | PASS | PASS |
+| `testmempoolaccept` (relay policy) | `allowed=true` | **`allowed=false: bad-witness-witness-size`** |
+| `generateblock` (consensus / miner inclusion) | **mined** | **mined** |
+| bytes recovered from the mined block | exact match | exact match |
+
+Knots **rejects the tx from relay** under its stricter witness-size policy, yet
+the very same tx is **consensus-valid and mines into a Knots block** — because
+BIP-110's data limits (the ones `bip110pack` respects) are the *consensus* rules,
+distinct from a node's *relay* policy. This is why the packing path mines via
+`generateblock` (the miner-inclusion path a real block producer uses) rather than
+relying on the P2P mempool. `bad-witness-witness-size` is a Knots **standardness**
+verdict, not a BIP-110 consensus violation.
 
 ---
 
@@ -182,6 +195,7 @@ src/packer.rs         fill a block to ~4 MWU, weight accounting
 src/bip110.rs         independent BIP-110 re-checker (C1–C10)
 src/main.rs           CLI: pack / commit / build-spend / verify / extract
 scripts/regtest-demo.sh   live end-to-end proof against bitcoind/knots
+scripts/fetch-knots.sh    download official Knots binaries for this platform
 ```
 
 ## Disclaimer
