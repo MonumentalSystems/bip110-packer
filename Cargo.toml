@@ -1,9 +1,13 @@
 [package]
-name = "bip110pack"
+name = "bip110-packer"
 version = "0.1.0"
 edition = "2021"
 description = "Maximally pack a Bitcoin block with BIP-110-compliant arbitrary data via Taproot push/OP_2DROP tapscripts"
 license = "MIT"
+repository = "https://github.com/MonumentalSystems/bip110-packer"
+readme = "README.md"
+keywords = ["bitcoin", "bip110", "taproot", "ordinals", "data"]
+categories = ["command-line-utilities", "cryptography::cryptocurrencies"]
 
 [dependencies]
 # secp256k1 is re-exported as bitcoin::secp256k1 (v0.29.x) — do NOT depend on it separately.
@@ -14,11 +18,11 @@ anyhow = "1"
 hex = "0.4"
 
 [lib]
-name = "bip110pack"
+name = "bip110_packer"
 path = "src/lib.rs"
 
 [[bin]]
-name = "bip110pack"
+name = "bip110-packer"
 path = "src/main.rs"
 
 [profile.release]

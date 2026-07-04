@@ -18,18 +18,13 @@ pub const PROTOCOL_ID: [u8; 3] = *b"ord";
 /// * [`Auth::Checksig`] — a `<32-byte x-only pubkey> OP_CHECKSIG` prefix runs
 ///   *before* the (depth-neutral) ord envelope, leaving a single bool on the
 ///   stack. No trailing `OP_1`. Witness = `[schnorr_sig, script, control_block]`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Auth {
     /// Anyone-can-spend: envelope terminated with `OP_1`.
+    #[default]
     None,
     /// Requires a Schnorr signature from the reveal key (via `OP_CHECKSIG`).
     Checksig,
-}
-
-impl Default for Auth {
-    fn default() -> Self {
-        Auth::None
-    }
 }
 
 /// Deliberate BIP-110 violation selector for the **violation generator**.
@@ -39,9 +34,10 @@ impl Default for Auth {
 /// output-level violation still produces a *spendable* anyone-can-spend tapleaf
 /// (final stack exactly one truthy element) so a non-enforcing node will mine it
 /// while [`crate::bip110::validate`] rejects it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Violate {
     /// No violation: identical to `build_tapscript_auth(data, Auth::None)`.
+    #[default]
     None,
     /// C3: inject a single 300-byte push (balanced by `OP_DROP`, stack-neutral).
     PushTooBig,
@@ -49,12 +45,6 @@ pub enum Violate {
     OpIf,
     /// C7: append an `OP_SUCCESSx` opcode (`OP_VER` / 0x62 == OP_SUCCESS98).
     OpSuccess,
-}
-
-impl Default for Violate {
-    fn default() -> Self {
-        Violate::None
-    }
 }
 
 /// Most data-dense per-push chunk size under BIP-110.
@@ -244,7 +234,9 @@ pub fn build_tapscript_violation(data: &[u8], violate: Violate) -> ScriptBuf {
         }
         Violate::OpSuccess => {
             let b = append_envelope(Builder::new(), data);
-            b.push_opcode(OP_PUSHNUM_1).push_opcode(OP_VER).into_script()
+            b.push_opcode(OP_PUSHNUM_1)
+                .push_opcode(OP_VER)
+                .into_script()
         }
     }
 }

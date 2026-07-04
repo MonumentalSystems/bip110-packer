@@ -50,7 +50,7 @@ impl std::fmt::Display for Violation {
 /// script, from the per-item size cap). Otherwise every item is a plain
 /// script-argument witness item subject to the 256-byte cap.
 fn is_control_block(item: &[u8]) -> bool {
-    item.len() >= 33 && (item.len() - 33) % 32 == 0 && (item[0] & 0xfe) == 0xc0
+    item.len() >= 33 && (item.len() - 33).is_multiple_of(32) && (item[0] & 0xfe) == 0xc0
 }
 
 /// Is `b` an `OP_SUCCESSx` opcode byte (per BIP342)?

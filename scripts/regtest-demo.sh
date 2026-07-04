@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# regtest-demo.sh — prove bip110pack end-to-end against a live Bitcoin node.
+# regtest-demo.sh — prove bip110-packer end-to-end against a live Bitcoin node.
 #
 # Spins up a throwaway regtest node, funds a Taproot commit address, builds the
-# data-carrying reveal transaction with bip110pack, mines it directly into a
+# data-carrying reveal transaction with bip110-packer, mines it directly into a
 # block (miner-inclusion path — the same path a miner uses, bypassing the
 # non-standard-tx relay policy that would reject a big data tx over the P2P
 # network), then proves:
@@ -24,7 +24,7 @@ BITCOIND="${BITCOIND:-bitcoind}"
 BITCOIN_CLI="${BITCOIN_CLI:-bitcoin-cli}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${BIP110PACK_BIN:-$ROOT/target/release/bip110pack}"
+BIN="${BIP110PACK_BIN:-$ROOT/target/release/bip110-packer}"
 
 # Pick a free RPC port (regtest P2P is disabled with -listen=0, so no P2P port).
 pick_port() {
@@ -91,7 +91,7 @@ demo_run() {
   sed 's/^/    /' /tmp/bs.err
 
   # 4. independent BIP-110 check
-  echo "--- bip110pack verify (independent checker) ---"
+  echo "--- bip110-packer verify (independent checker) ---"
   "$BIN" verify "$REVEAL" | sed 's/^/    /'
 
   # 5. policy vs consensus: relay would reject (non-standard), miner inclusion accepts
@@ -136,7 +136,7 @@ demo_run none "$PAYLOAD_TXT"
 demo_run checksig "$PAYLOAD_TXT"
 
 # --- headline max-pack figure (weight-accounting only; not broadcast) ---
-step "Max block-fill projection (bip110pack pack)"
+step "Max block-fill projection (bip110-packer pack)"
 head -c 4200000 /dev/urandom > "$DATADIR/big.bin"
 "$BIN" pack --input "$DATADIR/big.bin" --out /dev/null 2>&1 | sed 's/^/    /'
 

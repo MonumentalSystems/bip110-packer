@@ -1,4 +1,4 @@
-# bip110pack
+# bip110-packer
 
 Maximally pack a Bitcoin block with **BIP-110-compliant arbitrary data**, and
 prove it end-to-end against a live regtest node.
@@ -67,31 +67,50 @@ non-anyone-can-spend output.
 ## Install / build
 
 ```bash
-cargo build --release
-cargo test          # 19 unit tests
+cargo build --release            # binary: target/release/bip110-packer
+cargo test                       # 27 tests (21 unit + 6 enforcement)
+cargo install --path .           # install the `bip110-packer` CLI
 ```
+
+## CI & release
+
+* **`.github/workflows/ci.yml`** — on every push to `main` / PR: `cargo fmt --check`,
+  `cargo clippy -D warnings`, release build, the full test suite, and a
+  `cargo publish --dry-run`. (The `regtest-demo` / `enforce-demo` scripts need a
+  live `bitcoind` and are run manually, not in CI.)
+* **`.github/workflows/publish.yml`** — on pushing a `vX.Y.Z` tag: verifies the tag
+  matches the `Cargo.toml` version, tests, then `cargo publish` to crates.io.
+  Requires a `CRATES_IO_TOKEN` repository secret. Release:
+
+  ```bash
+  # bump `version` in Cargo.toml, commit, then:
+  git tag v0.1.0 && git push origin v0.1.0
+  ```
+
+  (The crate publishes as **`bip110-packer`** — matching the repo. Confirm the name
+  is free on crates.io before the first publish.)
 
 ## CLI
 
 ```bash
 # Weight/efficiency projection for a blob (uses dummy prevouts — not broadcastable):
-bip110pack pack --input big.bin
+bip110-packer pack --input big.bin
 
 # Print the P2TR address to fund for a data reveal:
-bip110pack commit --input data.bin --auth checksig --network regtest
+bip110-packer commit --input data.bin --auth checksig --network regtest
 
 # Build the signed reveal tx spending a funded UTXO (raw hex to stdout):
-bip110pack build-spend --input data.bin --auth checksig --network regtest \
+bip110-packer build-spend --input data.bin --auth checksig --network regtest \
   --prevout <txid:vout> --prevout-value <sat> --fee <sat> --to <address>
 
 # Independently re-check any tx against the BIP-110 rules:
-bip110pack verify <txhex>
+bip110-packer verify <txhex>
 
 # Recover the embedded bytes from a reveal tx's witness:
-bip110pack extract <txhex> --out recovered.bin
+bip110-packer extract <txhex> --out recovered.bin
 ```
 
-`bip110pack verify` is an **independent** re-derivation of every BIP-110 rule
+`bip110-packer verify` is an **independent** re-derivation of every BIP-110 rule
 (C1–C10) straight from the raw transaction — it does not trust the generator.
 
 ---
@@ -124,7 +143,7 @@ funded: 5de5a548...5fa7f272:0  value=2000000 sat (confirmed)
     in block:     true
     round-trip:   OK — 3810 bytes recovered from the mined block match the input
 
-== Max block-fill projection (bip110pack pack)
+== Max block-fill projection (bip110-packer pack)
       bytes packed:     3958620
       block fill:       99.95%
       efficiency:       99.019%
@@ -150,14 +169,14 @@ The same reveal transaction, run against both nodes:
 
 | | Bitcoin Core v30 | Bitcoin Knots v29.3 |
 |---|---|---|
-| `bip110pack verify` (our checker) | PASS | PASS |
+| `bip110-packer verify` (our checker) | PASS | PASS |
 | `testmempoolaccept` (relay policy) | `allowed=true` | **`allowed=false: bad-witness-witness-size`** |
 | `generateblock` (consensus / miner inclusion) | **mined** | **mined** |
 | bytes recovered from the mined block | exact match | exact match |
 
 Knots **rejects the tx from relay** under its stricter witness-size policy, yet
 the very same tx is **consensus-valid and mines into a Knots block** — because
-BIP-110's data limits (the ones `bip110pack` respects) are the *consensus* rules,
+BIP-110's data limits (the ones `bip110-packer` respects) are the *consensus* rules,
 distinct from a node's *relay* policy. This is why the packing path mines via
 `generateblock` (the miner-inclusion path a real block producer uses) rather than
 relying on the P2P mempool. `bad-witness-witness-size` is a Knots **standardness**
@@ -181,10 +200,10 @@ eval "$(./scripts/fetch-bip110-node.sh)"   # downloads the enforcing build, expo
 On regtest the deployment is driven to ACTIVE with
 `-vbparams=reduced_data:0:<timeout>` and ~432 mined blocks. `enforce-demo.sh`
 builds a **deliberately non-compliant** reveal for each rule
-(`bip110pack ... --violate {push,opif,opsuccess,output}`) and runs each through
+(`bip110-packer ... --violate {push,opif,opsuccess,output}`) and runs each through
 the node **twice on the same binary** — with `reduced_data` inactive, then active:
 
-| violation | `bip110pack verify` | node, `reduced_data` **inactive** | node, `reduced_data` **active** |
+| violation | `bip110-packer verify` | node, `reduced_data` **inactive** | node, `reduced_data` **active** |
 |---|---|---|---|
 | C3 oversized push | FAIL | MINED | **REJECTED** — `Push value size limit exceeded` |
 | C8 `OP_IF` in tapscript | FAIL | MINED | **REJECTED** — `OP_IF/NOTIF argument must be minimal in tapscript` |

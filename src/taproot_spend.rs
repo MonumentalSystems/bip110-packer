@@ -401,10 +401,12 @@ mod tests {
                 bundle.spend_info.output_key().to_x_only_public_key(),
                 &bundle.script,
             );
-            assert!(ok, "violation control block must commit to the tapleaf ({v:?})");
+            assert!(
+                ok,
+                "violation control block must commit to the tapleaf ({v:?})"
+            );
 
-            let addr =
-                commit_address_violation(b"gap demo", v, Network::Regtest).unwrap();
+            let addr = commit_address_violation(b"gap demo", v, Network::Regtest).unwrap();
             assert_eq!(
                 addr.script_pubkey(),
                 bundle.spk,

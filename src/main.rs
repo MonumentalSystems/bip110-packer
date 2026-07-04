@@ -1,4 +1,4 @@
-//! `bip110pack` CLI — pack a block with BIP-110-compliant arbitrary data and
+//! `bip110-packer` CLI — pack a block with BIP-110-compliant arbitrary data and
 //! verify transactions against the BIP-110 compliance checklist.
 
 use std::fs;
@@ -11,10 +11,10 @@ use bitcoin::{Address, Amount, Network, OutPoint, Transaction, Txid};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::str::FromStr;
 
-use bip110pack::bip110;
-use bip110pack::packer;
-use bip110pack::taproot_spend;
-use bip110pack::tapscript::{Auth, Violate};
+use bip110_packer::bip110;
+use bip110_packer::packer;
+use bip110_packer::taproot_spend;
+use bip110_packer::tapscript::{Auth, Violate};
 
 /// CLI-facing spend-authorization mode (maps to [`Auth`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -91,7 +91,7 @@ impl From<NetworkArg> for Network {
 
 #[derive(Parser)]
 #[command(
-    name = "bip110pack",
+    name = "bip110-packer",
     about = "Maximally pack a Bitcoin block with BIP-110-compliant arbitrary data via Taproot push/OP_2DROP tapscripts",
     version
 )]
@@ -198,7 +198,7 @@ fn cmd_pack(input: &str, out: &Option<PathBuf>) -> Result<()> {
 
     let total_hex_len: usize = res.txs.iter().map(|tx| encode::serialize(tx).len()).sum();
 
-    eprintln!("bip110pack: packed {} input byte(s)", data.len());
+    eprintln!("bip110-packer: packed {} input byte(s)", data.len());
     eprintln!("  transactions:     {}", res.txs.len());
     eprintln!("  bytes packed:     {}", res.bytes_packed);
     eprintln!(
@@ -274,7 +274,7 @@ fn cmd_verify(txhex: &str) -> Result<()> {
 }
 
 fn cmd_extract(txhex: &str, out: &Option<PathBuf>) -> Result<()> {
-    use bip110pack::tapscript::{extract_data, extract_ord_payload};
+    use bip110_packer::tapscript::{extract_data, extract_ord_payload};
     use bitcoin::script::ScriptBuf;
 
     let raw = hex::decode(txhex.trim()).context("decoding tx hex")?;
@@ -306,7 +306,7 @@ fn cmd_extract(txhex: &str, out: &Option<PathBuf>) -> Result<()> {
     }
 
     eprintln!(
-        "bip110pack: recovered {} data byte(s) from witness",
+        "bip110-packer: recovered {} data byte(s) from witness",
         data.len()
     );
     match out {
@@ -349,14 +349,15 @@ fn cmd_commit(
     let spk = addr.script_pubkey();
     println!("{addr}");
     println!("{}", hex::encode(spk.as_bytes()));
-    eprintln!("bip110pack: commit address for {} data byte(s)", data.len());
+    eprintln!(
+        "bip110-packer: commit address for {} data byte(s)",
+        data.len()
+    );
     eprintln!("  auth:            {auth:?}");
     eprintln!("  network:         {net}");
     eprintln!("  scriptPubKey:    {} bytes", spk.len());
     if !violate.is_none() {
-        eprintln!(
-            "  NOTE: deliberately BIP-110-NON-COMPLIANT commit (--violate {violate:?})"
-        );
+        eprintln!("  NOTE: deliberately BIP-110-NON-COMPLIANT commit (--violate {violate:?})");
     }
     Ok(())
 }
@@ -419,7 +420,7 @@ fn cmd_build_spend(
     println!("{}", hex::encode(encode::serialize(&tx)));
 
     let witness_items = tx.input[0].witness.len();
-    eprintln!("bip110pack: built reveal tx");
+    eprintln!("bip110-packer: built reveal tx");
     eprintln!("  auth:            {auth:?}");
     eprintln!("  network:         {net}");
     eprintln!("  txid:            {}", tx.compute_txid());

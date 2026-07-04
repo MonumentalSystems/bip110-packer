@@ -2,7 +2,7 @@
 #
 # enforce-demo.sh — prove BIP-110 ENFORCEMENT against a live regtest node.
 #
-# For each deliberate violation (built with `bip110pack ... --violate <kind>`)
+# For each deliberate violation (built with `bip110-packer ... --violate <kind>`)
 # this shows: (a) our independent validator REJECTS it, and (b) what the NODE
 # does when it's asked to mine the tx via generateblock (consensus validation).
 #
@@ -25,7 +25,7 @@ set -o pipefail
 BITCOIND="${BITCOIND:-bitcoind}"
 BITCOIN_CLI="${BITCOIN_CLI:-bitcoin-cli}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${BIP110PACK_BIN:-$ROOT/target/release/bip110pack}"
+BIN="${BIP110PACK_BIN:-$ROOT/target/release/bip110-packer}"
 DATA_HEX="$(printf 'BIP110 enforcement demo payload %s' "$(printf 'a%.0s' {1..40})" | xxd -p | tr -d '\n')"
 
 bold(){ printf '\033[1m%s\033[0m\n' "$*"; }

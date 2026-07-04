@@ -1,4 +1,4 @@
-//! # bip110pack
+//! # bip110-packer
 //!
 //! Maximally pack a single 4,000,000-weight-unit Bitcoin block with the most
 //! arbitrary bytes possible while keeping every transaction compliant with

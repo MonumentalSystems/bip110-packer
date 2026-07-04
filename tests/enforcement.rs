@@ -1,10 +1,10 @@
 //! Enforcement battery: prove the independent `bip110::validate` checker REJECTS
 //! each deliberate violation produced by the violation generator, and ACCEPTS a
-//! compliant control. Uses only the public `bip110pack` API.
+//! compliant control. Uses only the public `bip110-packer` API.
 
-use bip110pack::bip110;
-use bip110pack::taproot_spend::{build_spend_violation, commit_address, dummy_prevout};
-use bip110pack::tapscript::{Auth, Violate};
+use bip110_packer::bip110;
+use bip110_packer::taproot_spend::{build_spend_violation, commit_address, dummy_prevout};
+use bip110_packer::tapscript::{Auth, Violate};
 
 use bitcoin::absolute::LockTime;
 use bitcoin::transaction::Version;
@@ -35,8 +35,9 @@ fn reveal(violate: Violate, oversize_output: bool) -> Transaction {
 
 /// Assert `validate(tx)` fails with at least one violation of `rule`.
 fn assert_rule(tx: &Transaction, rule: &str) {
-    let err = bip110::validate(tx)
-        .expect_err(&format!("expected a {rule} violation, but validate() passed"));
+    let err = bip110::validate(tx).expect_err(&format!(
+        "expected a {rule} violation, but validate() passed"
+    ));
     assert!(
         err.iter().any(|v| v.rule == rule),
         "expected a {rule} violation; got {:?}",
@@ -73,7 +74,11 @@ fn oversize_control_block_is_rejected_c6() {
     // the 289-byte length trips C6.
     let mut cb = vec![0u8; 289];
     cb[0] = 0xc0;
-    assert_eq!((cb.len() - 33) % 32, 0, "control block shape must be 33+32*m");
+    assert_eq!(
+        (cb.len() - 33) % 32,
+        0, // control block shape must be 33 + 32*m
+        "control block shape must be 33+32*m"
+    );
 
     // A trivially compliant tapleaf (OP_1) so only the control block trips a rule.
     let tapleaf = ScriptBuf::from(vec![0x51u8]); // OP_1

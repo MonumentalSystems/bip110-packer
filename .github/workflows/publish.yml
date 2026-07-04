@@ -1,0 +1,51 @@
+name: Publish to crates.io
+
+# Publishes the crate when a version tag (vX.Y.Z) is pushed.
+#
+# Requires a repository secret CRATES_IO_TOKEN (Settings → Secrets and variables
+# → Actions). Get the token from https://crates.io/settings/tokens with the
+# "publish-new" / "publish-update" scopes.
+#
+# Release flow:
+#   1. bump `version` in Cargo.toml, commit.
+#   2. git tag v0.1.0 && git push origin v0.1.0
+# The tag version must equal the Cargo.toml version or the job fails fast.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: verify · test · publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tag matches Cargo.toml version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          echo "tag=$tag  Cargo.toml=$crate"
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::tag v$tag does not match Cargo.toml version $crate"
+            exit 1
+          fi
+
+      - name: Test before publishing
+        run: cargo test --locked
+
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish --locked
