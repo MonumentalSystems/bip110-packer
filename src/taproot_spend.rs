@@ -14,7 +14,9 @@ use bitcoin::{
     Address, Amount, Network, OutPoint, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
 
-use crate::tapscript::{build_tapscript, build_tapscript_auth, Auth};
+use crate::tapscript::{
+    build_tapscript, build_tapscript_auth, build_tapscript_violation, Auth, Violate,
+};
 
 /// Fixed 32-byte secret used to derive the deterministic internal key.
 /// Any value in `[1, n-1]` works; `0x01` repeated is trivially valid.
@@ -103,6 +105,125 @@ pub fn build_spend_auth(data: &[u8], auth: Auth) -> Result<SpendBundle> {
         spk,
         spend_info,
     })
+}
+
+/// Build the Taproot commitment for `data` using a deliberate [`Violate`] leaf.
+///
+/// Identical to [`build_spend`]/[`build_spend_auth`] but the tapleaf is the
+/// intentionally NON-COMPLIANT script from [`build_tapscript_violation`]. Still a
+/// valid, spendable single-leaf commitment (anyone-can-spend).
+fn build_spend_violation_bundle(data: &[u8], violate: Violate) -> Result<SpendBundle> {
+    let secp = Secp256k1::new();
+    let ik = internal_key(&secp);
+    let script = build_tapscript_violation(data, violate);
+
+    let spend_info = TaprootBuilder::new()
+        .add_leaf(0, script.clone())
+        .map_err(|e| anyhow!("add_leaf: {e:?}"))?
+        .finalize(&secp, ik)
+        .map_err(|_| anyhow!("incomplete taproot tree"))?;
+
+    let control_block = spend_info
+        .control_block(&(script.clone(), LeafVersion::TapScript))
+        .ok_or_else(|| anyhow!("script not present in tree"))?;
+
+    let spk = ScriptBuf::new_p2tr(&secp, ik, spend_info.merkle_root());
+
+    Ok(SpendBundle {
+        script,
+        control_block,
+        spk,
+        spend_info,
+    })
+}
+
+/// P2TR commit address for a deliberately BIP-110-NON-COMPLIANT [`Violate`] leaf.
+///
+/// Reuses the deterministic internal key, so `build_spend_violation` reproduces
+/// the exact same commitment/control-block and the reveal is valid.
+pub fn commit_address_violation(
+    data: &[u8],
+    violate: Violate,
+    network: Network,
+) -> Result<Address> {
+    let secp = Secp256k1::new();
+    let ik = internal_key(&secp);
+    let bundle = build_spend_violation_bundle(data, violate)?;
+    Ok(Address::p2tr(
+        &secp,
+        ik,
+        bundle.spend_info.merkle_root(),
+        network,
+    ))
+}
+
+/// Build a spendable reveal transaction that carries a deliberate BIP-110
+/// violation, for enforcement testing and the node-side gap demo.
+///
+/// Spends the violating commit produced by [`commit_address_violation`] with an
+/// anyone-can-spend witness `[leaf_script, control_block]` (no signature) and
+/// pays `prevout_value - fee` to `to`.
+///
+/// When `oversize_output` is true, a second output with a 40-byte NON-OP_RETURN
+/// scriptPubKey is appended to trigger the C1 output-size rule while the tapleaf
+/// itself stays compliant/spendable (callers pass `violate = Violate::None`).
+/// This models an "output too big" violation independent of the leaf.
+#[allow(clippy::too_many_arguments)]
+pub fn build_spend_violation(
+    data: &[u8],
+    violate: Violate,
+    prevout: OutPoint,
+    prevout_value: Amount,
+    to: &ScriptBuf,
+    fee: Amount,
+    network: Network,
+    oversize_output: bool,
+) -> Result<Transaction> {
+    // The raw tx is network-agnostic; `network` is accepted for signature parity
+    // with `build_signed_spend` and future use.
+    let _ = network;
+
+    let bundle = build_spend_violation_bundle(data, violate)?;
+
+    let out_value = prevout_value
+        .checked_sub(fee)
+        .ok_or_else(|| anyhow!("fee {fee} exceeds prevout value {prevout_value}"))?;
+
+    let txin = TxIn {
+        previous_output: prevout,
+        script_sig: ScriptBuf::new(),
+        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+        witness: Witness::new(),
+    };
+
+    let mut output = vec![TxOut {
+        value: out_value,
+        script_pubkey: to.clone(),
+    }];
+    if oversize_output {
+        // 40-byte NON-OP_RETURN scriptPubKey (> 34) → C1. First byte 0x00 (OP_0),
+        // so `is_op_return()` is false and the 34-byte cap (not the 83-byte
+        // OP_RETURN cap) applies.
+        output.push(TxOut {
+            value: Amount::from_sat(330),
+            script_pubkey: ScriptBuf::from(vec![0x00u8; 40]),
+        });
+    }
+
+    let mut tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![txin],
+        output,
+    };
+
+    // Anyone-can-spend script-path witness: [ <tapleaf script>, <control block> ].
+    let mut witness = Witness::new();
+    witness.push(bundle.script.as_bytes());
+    witness.push(bundle.control_block.serialize());
+    tx.input[0].witness = witness;
+
+    Ok(tx)
 }
 
 /// Compute the P2TR address to fund so its single-leaf tapleaf can later be
@@ -266,6 +387,30 @@ mod tests {
         let bundle = build_spend(b"payload").unwrap();
         assert_eq!(bundle.spk.len(), 34);
         assert_eq!(bundle.spk.as_bytes()[0], 0x51); // OP_1 / witness v1
+    }
+
+    #[test]
+    fn violation_reveal_control_block_matches_commit_address() {
+        // The reveal's control block must commit to the violating tapleaf under
+        // the same output key that `commit_address_violation` derives.
+        let secp = Secp256k1::new();
+        for v in [Violate::PushTooBig, Violate::OpIf, Violate::OpSuccess] {
+            let bundle = build_spend_violation_bundle(b"gap demo", v).unwrap();
+            let ok = bundle.control_block.verify_taproot_commitment(
+                &secp,
+                bundle.spend_info.output_key().to_x_only_public_key(),
+                &bundle.script,
+            );
+            assert!(ok, "violation control block must commit to the tapleaf ({v:?})");
+
+            let addr =
+                commit_address_violation(b"gap demo", v, Network::Regtest).unwrap();
+            assert_eq!(
+                addr.script_pubkey(),
+                bundle.spk,
+                "commit address spk must match reveal bundle spk ({v:?})"
+            );
+        }
     }
 
     #[test]

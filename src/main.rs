@@ -14,7 +14,7 @@ use std::str::FromStr;
 use bip110pack::bip110;
 use bip110pack::packer;
 use bip110pack::taproot_spend;
-use bip110pack::tapscript::Auth;
+use bip110pack::tapscript::{Auth, Violate};
 
 /// CLI-facing spend-authorization mode (maps to [`Auth`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -31,6 +31,43 @@ impl From<AuthArg> for Auth {
             AuthArg::None => Auth::None,
             AuthArg::Checksig => Auth::Checksig,
         }
+    }
+}
+
+/// CLI-facing deliberate BIP-110 violation selector (maps to [`Violate`] plus an
+/// output-level flag). `none` keeps existing compliant behavior; the others
+/// build a spendable-but-non-compliant reveal for enforcement/gap testing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum ViolateArg {
+    /// No violation (default): normal compliant commit/spend.
+    None,
+    /// C3: a 300-byte push inside the tapleaf.
+    Push,
+    /// C8: an executing OP_IF/OP_ENDIF in the tapleaf.
+    Opif,
+    /// C7: an OP_SUCCESS opcode in the tapleaf.
+    Opsuccess,
+    /// C1: compliant leaf, but an oversize (40-byte) non-OP_RETURN output.
+    Output,
+}
+
+impl ViolateArg {
+    /// The leaf-level violation this selector injects (None for `output`).
+    fn to_leaf(self) -> Violate {
+        match self {
+            ViolateArg::None | ViolateArg::Output => Violate::None,
+            ViolateArg::Push => Violate::PushTooBig,
+            ViolateArg::Opif => Violate::OpIf,
+            ViolateArg::Opsuccess => Violate::OpSuccess,
+        }
+    }
+    /// Whether to append the oversize (C1) output.
+    fn oversize_output(self) -> bool {
+        matches!(self, ViolateArg::Output)
+    }
+    /// Whether this is the compliant (no-violation) path.
+    fn is_none(self) -> bool {
+        matches!(self, ViolateArg::None)
     }
 }
 
@@ -106,6 +143,9 @@ enum Command {
         /// Target network.
         #[arg(long, value_enum, default_value_t = NetworkArg::Regtest)]
         network: NetworkArg,
+        /// Deliberately inject a BIP-110 violation (enforcement/gap testing).
+        #[arg(long, value_enum, default_value_t = ViolateArg::None)]
+        violate: ViolateArg,
     },
     /// Build the fully-formed (signed, for checksig) reveal transaction and print
     /// its raw hex to stdout.
@@ -134,6 +174,9 @@ enum Command {
         /// Destination address for the single output.
         #[arg(long)]
         to: String,
+        /// Deliberately inject a BIP-110 violation (enforcement/gap testing).
+        #[arg(long, value_enum, default_value_t = ViolateArg::None)]
+        violate: ViolateArg,
     },
 }
 
@@ -291,10 +334,18 @@ fn cmd_commit(
     data_hex: &Option<String>,
     auth: AuthArg,
     network: NetworkArg,
+    violate: ViolateArg,
 ) -> Result<()> {
     let data = resolve_data(input, data_hex)?;
     let net: Network = network.into();
-    let addr = taproot_spend::commit_address(&data, auth.into(), net)?;
+    let addr = if violate.is_none() {
+        taproot_spend::commit_address(&data, auth.into(), net)?
+    } else {
+        // Violating commits are anyone-can-spend (leaf carries the violation);
+        // --auth is ignored. `output` uses a compliant leaf (Violate::None) with
+        // the oversize output added only at spend time.
+        taproot_spend::commit_address_violation(&data, violate.to_leaf(), net)?
+    };
     let spk = addr.script_pubkey();
     println!("{addr}");
     println!("{}", hex::encode(spk.as_bytes()));
@@ -302,6 +353,11 @@ fn cmd_commit(
     eprintln!("  auth:            {auth:?}");
     eprintln!("  network:         {net}");
     eprintln!("  scriptPubKey:    {} bytes", spk.len());
+    if !violate.is_none() {
+        eprintln!(
+            "  NOTE: deliberately BIP-110-NON-COMPLIANT commit (--violate {violate:?})"
+        );
+    }
     Ok(())
 }
 
@@ -315,6 +371,7 @@ fn cmd_build_spend(
     prevout_value: u64,
     fee: u64,
     to: &str,
+    violate: ViolateArg,
 ) -> Result<()> {
     let data = resolve_data(input, data_hex)?;
     let net: Network = network.into();
@@ -334,15 +391,29 @@ fn cmd_build_spend(
         .context("--to address does not match --network")?;
     let to_spk = to_addr.script_pubkey();
 
-    let tx = taproot_spend::build_signed_spend(
-        &data,
-        auth.into(),
-        outpoint,
-        Amount::from_sat(prevout_value),
-        &to_spk,
-        Amount::from_sat(fee),
-        net,
-    )?;
+    let tx = if violate.is_none() {
+        taproot_spend::build_signed_spend(
+            &data,
+            auth.into(),
+            outpoint,
+            Amount::from_sat(prevout_value),
+            &to_spk,
+            Amount::from_sat(fee),
+            net,
+        )?
+    } else {
+        // Violating reveals are anyone-can-spend; --auth is ignored.
+        taproot_spend::build_spend_violation(
+            &data,
+            violate.to_leaf(),
+            outpoint,
+            Amount::from_sat(prevout_value),
+            &to_spk,
+            Amount::from_sat(fee),
+            net,
+            violate.oversize_output(),
+        )?
+    };
 
     // Only the raw tx hex goes to stdout.
     println!("{}", hex::encode(encode::serialize(&tx)));
@@ -365,7 +436,14 @@ fn cmd_build_spend(
             for v in &vs {
                 eprintln!("  VIOLATION {v}");
             }
-            return Err(anyhow!("built tx failed BIP-110 validation"));
+            if violate.is_none() {
+                return Err(anyhow!("built tx failed BIP-110 validation"));
+            }
+            // Deliberate violation: still emit the hex and exit 0 so a node can
+            // be fed the tx for the gap demo.
+            eprintln!(
+                "  NOTE: this tx is deliberately BIP-110-NON-COMPLIANT (--violate {violate:?})"
+            );
         }
     }
     Ok(())
@@ -382,7 +460,8 @@ fn main() -> Result<()> {
             data_hex,
             auth,
             network,
-        } => cmd_commit(input, data_hex, *auth, *network),
+            violate,
+        } => cmd_commit(input, data_hex, *auth, *network, *violate),
         Command::BuildSpend {
             input,
             data_hex,
@@ -392,6 +471,7 @@ fn main() -> Result<()> {
             prevout_value,
             fee,
             to,
+            violate,
         } => cmd_build_spend(
             input,
             data_hex,
@@ -401,6 +481,7 @@ fn main() -> Result<()> {
             *prevout_value,
             *fee,
             to,
+            *violate,
         ),
     }
 }

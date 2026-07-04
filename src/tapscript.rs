@@ -32,6 +32,31 @@ impl Default for Auth {
     }
 }
 
+/// Deliberate BIP-110 violation selector for the **violation generator**.
+///
+/// These constructions are intentionally NON-COMPLIANT and exist only for
+/// enforcement testing and the node-side "gap demo". Every variant except an
+/// output-level violation still produces a *spendable* anyone-can-spend tapleaf
+/// (final stack exactly one truthy element) so a non-enforcing node will mine it
+/// while [`crate::bip110::validate`] rejects it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Violate {
+    /// No violation: identical to `build_tapscript_auth(data, Auth::None)`.
+    None,
+    /// C3: inject a single 300-byte push (balanced by `OP_DROP`, stack-neutral).
+    PushTooBig,
+    /// C8: include an `OP_IF … OP_ENDIF` that actually executes.
+    OpIf,
+    /// C7: append an `OP_SUCCESSx` opcode (`OP_VER` / 0x62 == OP_SUCCESS98).
+    OpSuccess,
+}
+
+impl Default for Violate {
+    fn default() -> Self {
+        Violate::None
+    }
+}
+
 /// Most data-dense per-push chunk size under BIP-110.
 ///
 /// BIP-110 caps every `OP_PUSHDATA*` payload *inside* a script at 256 bytes.
@@ -167,6 +192,59 @@ pub fn build_tapscript_auth(data: &[u8], auth: Auth) -> ScriptBuf {
             let mut b = Builder::new().push_slice(&pk_push).push_opcode(OP_CHECKSIG);
             b = append_envelope(b, data);
             b.into_script()
+        }
+    }
+}
+
+/// Build a **deliberately BIP-110-NON-COMPLIANT** data-carrying tapleaf with
+/// exactly one injected violation, for enforcement testing only.
+///
+/// Every variant (except an output-level violation, which is not a leaf concern)
+/// still produces an anyone-can-spend script that executes to exactly one truthy
+/// stack element, so a non-enforcing node will accept and mine it while
+/// [`crate::bip110::validate`] flags the rule below:
+///
+/// * [`Violate::None`] — identical to `build_tapscript_auth(data, Auth::None)`.
+/// * [`Violate::PushTooBig`] (C3) — `<300B> OP_DROP <ord-envelope> OP_1`. The
+///   300-byte push (`> 256`, `<= 520`) executes fine and is immediately dropped,
+///   leaving the normal envelope + `OP_1` (final stack `[1]`).
+/// * [`Violate::OpIf`] (C8) — `<ord-envelope> OP_1 OP_IF OP_1 OP_ENDIF`. The
+///   `OP_IF` executes on a truthy value and re-pushes `OP_1` (final stack `[1]`).
+/// * [`Violate::OpSuccess`] (C7) — `<ord-envelope> OP_1 OP_VER`. `OP_VER` is
+///   `OP_SUCCESS98` under BIP342, making the whole tapscript unconditionally
+///   valid (the node accepts it regardless of the rest of the stack).
+///
+/// `extract_ord_payload` still round-trips the data for None/PushTooBig/OpIf.
+pub fn build_tapscript_violation(data: &[u8], violate: Violate) -> ScriptBuf {
+    use bitcoin::opcodes::all::{OP_ENDIF, OP_IF, OP_VER};
+    match violate {
+        Violate::None => build_tapscript_auth(data, Auth::None),
+        Violate::PushTooBig => {
+            // 300 > 256 (C3) but <= 520, so it executes; OP_DROP keeps the stack
+            // neutral before the normal envelope + OP_1 terminator.
+            let big = to_push(&vec![0xEEu8; 300]);
+            let mut b = Builder::new().push_slice(&big).push_opcode(OP_DROP);
+            b = append_envelope(b, data);
+            b.push_opcode(OP_PUSHNUM_1).into_script()
+        }
+        Violate::OpIf => {
+            // INVARIANT: the OP_IF argument must stay minimally-encoded (here the
+            // `0x01` produced by OP_PUSHNUM_1). BIP342's MINIMALIF is a *consensus*
+            // rule in tapscript, so a non-minimal truthy push before OP_IF would be
+            // rejected by *every* node as `bad-minimalif` — masking the BIP-110 C8
+            // ban and silently breaking the enforcement/gap demo. A BIP-110-enforcing
+            // node rejects this leaf for executing OP_IF at all; a non-enforcing node
+            // accepts it (0x01 is minimal). Do not change the pre-OP_IF terminator.
+            let b = append_envelope(Builder::new(), data);
+            b.push_opcode(OP_PUSHNUM_1)
+                .push_opcode(OP_IF)
+                .push_opcode(OP_PUSHNUM_1)
+                .push_opcode(OP_ENDIF)
+                .into_script()
+        }
+        Violate::OpSuccess => {
+            let b = append_envelope(Builder::new(), data);
+            b.push_opcode(OP_PUSHNUM_1).push_opcode(OP_VER).into_script()
         }
     }
 }
@@ -332,6 +410,43 @@ mod tests {
 
         // Round-trip still works (pubkey/checksig prefix ignored).
         assert_eq!(extract_ord_payload(&script), data);
+    }
+
+    #[test]
+    fn violation_leaves_roundtrip_and_inject_expected_opcode() {
+        let data = b"violation generator payload".to_vec();
+
+        // None == Auth::None.
+        assert_eq!(
+            build_tapscript_violation(&data, Violate::None),
+            build_tapscript_auth(&data, Auth::None)
+        );
+
+        // PushTooBig: a 300-byte push present; still round-trips.
+        let s = build_tapscript_violation(&data, Violate::PushTooBig);
+        assert_eq!(extract_ord_payload(&s), data);
+        assert!(
+            s.instructions()
+                .any(|i| matches!(i, Ok(Instruction::PushBytes(pb)) if pb.as_bytes().len() == 300)),
+            "PushTooBig must contain a 300-byte push"
+        );
+
+        // OpIf: OP_IF opcode present; still round-trips.
+        let s = build_tapscript_violation(&data, Violate::OpIf);
+        assert_eq!(extract_ord_payload(&s), data);
+        assert!(
+            s.instructions()
+                .any(|i| matches!(i, Ok(Instruction::Op(op)) if op.to_u8() == 0x63)),
+            "OpIf must contain OP_IF (0x63)"
+        );
+
+        // OpSuccess: OP_VER (0x62) present.
+        let s = build_tapscript_violation(&data, Violate::OpSuccess);
+        assert!(
+            s.instructions()
+                .any(|i| matches!(i, Ok(Instruction::Op(op)) if op.to_u8() == 0x62)),
+            "OpSuccess must contain OP_VER/OP_SUCCESS98 (0x62)"
+        );
     }
 
     #[test]

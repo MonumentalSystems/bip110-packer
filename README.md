@@ -165,6 +165,45 @@ verdict, not a BIP-110 consensus violation.
 
 ---
 
+## Node-enforced BIP-110 consensus (the real proof)
+
+A stock Core/Knots node has no BIP-110 *consensus* rules, so it will happily mine
+a data tx that breaks them. The **BIP-110 activation client**
+([`dathonohm/bitcoin`](https://github.com/dathonohm/bitcoin), a Knots fork — see
+[bip110.org](https://bip110.org)) adds the `reduced_data` versionbits deployment
+and the consensus rules. Fetch it and drive the enforcement demo:
+
+```bash
+eval "$(./scripts/fetch-bip110-node.sh)"   # downloads the enforcing build, exports BITCOIND/BITCOIN_CLI
+./scripts/enforce-demo.sh                  # auto-detects the enforcing build, runs the contrast
+```
+
+On regtest the deployment is driven to ACTIVE with
+`-vbparams=reduced_data:0:<timeout>` and ~432 mined blocks. `enforce-demo.sh`
+builds a **deliberately non-compliant** reveal for each rule
+(`bip110pack ... --violate {push,opif,opsuccess,output}`) and runs each through
+the node **twice on the same binary** — with `reduced_data` inactive, then active:
+
+| violation | `bip110pack verify` | node, `reduced_data` **inactive** | node, `reduced_data` **active** |
+|---|---|---|---|
+| C3 oversized push | FAIL | MINED | **REJECTED** — `Push value size limit exceeded` |
+| C8 `OP_IF` in tapscript | FAIL | MINED | **REJECTED** — `OP_IF/NOTIF argument must be minimal in tapscript` |
+| C7 `OP_SUCCESS` in tapscript | FAIL | MINED | **REJECTED** — `OP_SUCCESSx reserved for soft-fork upgrades` |
+| C1 oversized output | FAIL | MINED | **REJECTED** — `bad-txns-vout-script-toolarge` |
+| *(compliant control)* | PASS | MINED | MINED |
+
+Same binary, same transactions — the **only** difference is deployment
+activation, which proves the rejections are BIP-110-gated and not some universal
+rule. `generateblock` runs full `TestBlockValidity`, so a rejection is a genuine
+**consensus** verdict. The activation client is also what makes the packer's
+compliance claim node-checkable end-to-end, not just self-asserted.
+
+The violation generator is exercised in CI-able unit form too — `cargo test`
+includes `tests/enforcement.rs`, which asserts `bip110::validate` rejects each of
+C1/C3/C6/C7/C8 and accepts the compliant control.
+
+---
+
 ## BIP-110 compliance checklist (enforced by `bip110::validate`)
 
 | # | Rule | How we satisfy it |
@@ -193,9 +232,12 @@ src/tapscript.rs      envelope builder (ord-compatible) + Auth modes + extractor
 src/taproot_spend.rs  Taproot commit/reveal, deterministic keys, Schnorr signing
 src/packer.rs         fill a block to ~4 MWU, weight accounting
 src/bip110.rs         independent BIP-110 re-checker (C1–C10)
-src/main.rs           CLI: pack / commit / build-spend / verify / extract
-scripts/regtest-demo.sh   live end-to-end proof against bitcoind/knots
-scripts/fetch-knots.sh    download official Knots binaries for this platform
+src/main.rs           CLI: pack / commit / build-spend / verify / extract / --violate
+tests/enforcement.rs  battery: validator rejects each rule (C1/C3/C6/C7/C8)
+scripts/regtest-demo.sh      live end-to-end proof against bitcoind/knots
+scripts/enforce-demo.sh      violation vs enforcement contrast (auto-detects the enforcing build)
+scripts/fetch-knots.sh       download official Knots binaries for this platform
+scripts/fetch-bip110-node.sh download the BIP-110 enforcing build (dathonohm/bitcoin)
 ```
 
 ## Disclaimer
